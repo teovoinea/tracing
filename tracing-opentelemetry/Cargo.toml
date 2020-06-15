@@ -26,7 +26,7 @@ opentelemetry = { version = "0.7", default-features = false, features = ["trace"
 rand = "0.7"
 tracing = { path = "../tracing", version = "0.1" }
 tracing-core = { path = "../tracing-core", version = "0.1" }
-tracing-subscriber = { path = "../tracing-subscriber", version = "0.2", default-features = false, features = ["registry"] }
+tracing-subscriber = { path = "../tracing-subscriber", version = ">= 0.2, < 0.4", default-features = false, features = ["registry"] }
 tracing-log = { path = "../tracing-log", version = "0.1", default-features = false, optional = true }
 
 [dev-dependencies]

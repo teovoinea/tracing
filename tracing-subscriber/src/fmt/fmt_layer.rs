@@ -110,7 +110,7 @@ impl<S, N, E, W> Layer<S, N, E, W>
 where
     S: Subscriber + for<'a> LookupSpan<'a>,
     N: for<'writer> FormatFields<'writer> + 'static,
-    W: MakeWriter + 'static,
+    W: for<'writer> MakeWriter<'writer> + 'static,
 {
     /// Sets the [event formatter][`FormatEvent`] that the layer will use to
     /// format events.
@@ -150,7 +150,7 @@ where
 
 // This needs to be a seperate impl block because they place different bounds on the type paramaters.
 impl<S, N, E, W> Layer<S, N, E, W> {
-    /// Sets the [`MakeWriter`] that the [`Layer`] being built will use to write events.
+    /// Sets the [`for<'writer> MakeWriter<'writer>`] that the [`Layer`] being built will use to write events.
     ///
     /// # Examples
     ///
@@ -167,11 +167,11 @@ impl<S, N, E, W> Layer<S, N, E, W> {
     /// # let _ = layer.with_subscriber(tracing_subscriber::registry::Registry::default());
     /// ```
     ///
-    /// [`MakeWriter`]: ../fmt/trait.MakeWriter.html
+    /// [`for<'writer> MakeWriter<'writer>`]: ../fmt/trait.for<'writer> MakeWriter<'writer>.html
     /// [`Layer`]: ../layer/trait.Layer.html
     pub fn with_writer<W2>(self, make_writer: W2) -> Layer<S, N, E, W2>
     where
-        W2: MakeWriter + 'static,
+        W2: for<'writer> MakeWriter<'writer> + 'static,
     {
         Layer {
             fmt_fields: self.fmt_fields,
@@ -441,7 +441,7 @@ where
     S: Subscriber + for<'a> LookupSpan<'a>,
     N: for<'writer> FormatFields<'writer> + 'static,
     E: FormatEvent<S, N> + 'static,
-    W: MakeWriter + 'static,
+    W: for<'writer> MakeWriter<'writer> + 'static,
 {
     /// Builds a [`Layer`] with the provided configuration.
     ///
@@ -472,7 +472,7 @@ where
     S: Subscriber + for<'a> LookupSpan<'a>,
     N: for<'writer> FormatFields<'writer> + 'static,
     E: FormatEvent<S, N> + 'static,
-    W: MakeWriter + 'static,
+    W: for<'writer> MakeWriter<'writer> + 'static,
 {
     #[inline]
     fn make_ctx<'a>(&'a self, ctx: Context<'a, S>) -> FmtContext<'a, S, N> {
@@ -553,7 +553,7 @@ where
     S: Subscriber + for<'a> LookupSpan<'a>,
     N: for<'writer> FormatFields<'writer> + 'static,
     E: FormatEvent<S, N> + 'static,
-    W: MakeWriter + 'static,
+    W: for<'writer> MakeWriter<'writer> + 'static,
 {
     fn new_span(&self, attrs: &Attributes<'_>, id: &Id, ctx: Context<'_, S>) {
         let span = ctx.span(id).expect("Span not found, this is a bug");
@@ -714,7 +714,7 @@ where
 
     unsafe fn downcast_raw(&self, id: TypeId) -> Option<*const ()> {
         // This `downcast_raw` impl allows downcasting a `fmt` layer to any of
-        // its components (event formatter, field formatter, and `MakeWriter`)
+        // its components (event formatter, field formatter, and `for<'writer> MakeWriter<'writer>`)
         // as well as to the layer's type itself. The potential use-cases for
         // this *may* be somewhat niche, though...
         match () {
@@ -858,15 +858,12 @@ mod test {
         self,
         format::{self, test::MockTime, Format},
         layer::Layer as _,
-        test::MockWriter,
+        test::MockMakeWriter,
         time,
     };
     use crate::Registry;
     use format::FmtSpan;
-    use lazy_static::lazy_static;
     use regex::Regex;
-    use std::sync::Mutex;
-    use tracing::subscriber::with_default;
     use tracing_core::dispatcher::Dispatch;
 
     #[test]
@@ -920,91 +917,66 @@ mod test {
         re.replace_all(s.as_str(), "timing").to_string()
     }
 
+    fn test_synthesize(which: FmtSpan, expected: &str) {
+        let make_writer = MockMakeWriter::default();
+        let subscriber = crate::fmt::Subscriber::builder()
+            .with_writer(make_writer.clone())
+            .with_level(false)
+            .with_ansi(false)
+            .with_timer(MockTime)
+            .with_span_events(which)
+            .finish();
+        test_synthesize_subscriber(subscriber, make_writer, expected)
+    }
+
+    fn test_synthesize_subscriber(
+        subscriber: impl Into<Dispatch>,
+        buf: MockMakeWriter,
+        expected: &str,
+    ) {
+        tracing::dispatcher::with_default(&subscriber.into(), || {
+            let span1 = tracing::info_span!("span1", x = 42);
+            let _e = span1.enter();
+        });
+        let actual = sanitize_timings(String::from_utf8(buf.buf().to_vec()).unwrap());
+        assert_eq!(expected, actual.as_str());
+    }
+
     #[test]
     fn synthesize_span_none() {
-        lazy_static! {
-            static ref BUF: Mutex<Vec<u8>> = Mutex::new(vec![]);
-        }
-
-        let make_writer = || MockWriter::new(&BUF);
+        let make_writer = MockMakeWriter::default();
         let subscriber = crate::fmt::Subscriber::builder()
-            .with_writer(make_writer)
+            .with_writer(make_writer.clone())
             .with_level(false)
             .with_ansi(false)
             .with_timer(MockTime)
             // check that FmtSpan::NONE is the default
             .finish();
 
-        with_default(subscriber, || {
-            let span1 = tracing::info_span!("span1", x = 42);
-            let _e = span1.enter();
-        });
-        let actual = sanitize_timings(String::from_utf8(BUF.try_lock().unwrap().to_vec()).unwrap());
-        assert_eq!("", actual.as_str());
+        test_synthesize_subscriber(subscriber, make_writer, "")
     }
 
     #[test]
     fn synthesize_span_active() {
-        lazy_static! {
-            static ref BUF: Mutex<Vec<u8>> = Mutex::new(vec![]);
-        }
-
-        let make_writer = || MockWriter::new(&BUF);
-        let subscriber = crate::fmt::Subscriber::builder()
-            .with_writer(make_writer)
-            .with_level(false)
-            .with_ansi(false)
-            .with_timer(MockTime)
-            .with_span_events(FmtSpan::ACTIVE)
-            .finish();
-
-        with_default(subscriber, || {
-            let span1 = tracing::info_span!("span1", x = 42);
-            let _e = span1.enter();
-        });
-        let actual = sanitize_timings(String::from_utf8(BUF.try_lock().unwrap().to_vec()).unwrap());
-        assert_eq!(
+        test_synthesize(
+            FmtSpan::ACTIVE,
             "fake time span1{x=42}: tracing_subscriber::fmt::fmt_layer::test: enter\n\
              fake time span1{x=42}: tracing_subscriber::fmt::fmt_layer::test: exit\n",
-            actual.as_str()
         );
     }
 
     #[test]
     fn synthesize_span_close() {
-        lazy_static! {
-            static ref BUF: Mutex<Vec<u8>> = Mutex::new(vec![]);
-        }
-
-        let make_writer = || MockWriter::new(&BUF);
-        let subscriber = crate::fmt::Subscriber::builder()
-            .with_writer(make_writer)
-            .with_level(false)
-            .with_ansi(false)
-            .with_timer(MockTime)
-            .with_span_events(FmtSpan::CLOSE)
-            .finish();
-
-        with_default(subscriber, || {
-            let span1 = tracing::info_span!("span1", x = 42);
-            let _e = span1.enter();
-        });
-        let actual = sanitize_timings(String::from_utf8(BUF.try_lock().unwrap().to_vec()).unwrap());
-        assert_eq!(
+        test_synthesize(FmtSpan::CLOSE,
             "fake time span1{x=42}: tracing_subscriber::fmt::fmt_layer::test: close timing timing\n",
-            actual.as_str()
         );
     }
 
     #[test]
     fn synthesize_span_close_no_timing() {
-        lazy_static! {
-            static ref BUF: Mutex<Vec<u8>> = Mutex::new(vec![]);
-        }
-
-        let make_writer = || MockWriter::new(&BUF);
+        let make_writer = MockMakeWriter::default();
         let subscriber = crate::fmt::Subscriber::builder()
-            .with_writer(make_writer)
+            .with_writer(make_writer.clone())
             .with_level(false)
             .with_ansi(false)
             .with_timer(MockTime)
@@ -1012,43 +984,20 @@ mod test {
             .with_span_events(FmtSpan::CLOSE)
             .finish();
 
-        with_default(subscriber, || {
-            let span1 = tracing::info_span!("span1", x = 42);
-            let _e = span1.enter();
-        });
-        let actual = sanitize_timings(String::from_utf8(BUF.try_lock().unwrap().to_vec()).unwrap());
-        assert_eq!(
+        test_synthesize_subscriber(
+            subscriber,
+            make_writer,
             " span1{x=42}: tracing_subscriber::fmt::fmt_layer::test: close\n",
-            actual.as_str()
         );
     }
 
     #[test]
     fn synthesize_span_full() {
-        lazy_static! {
-            static ref BUF: Mutex<Vec<u8>> = Mutex::new(vec![]);
-        }
-
-        let make_writer = || MockWriter::new(&BUF);
-        let subscriber = crate::fmt::Subscriber::builder()
-            .with_writer(make_writer)
-            .with_level(false)
-            .with_ansi(false)
-            .with_timer(MockTime)
-            .with_span_events(FmtSpan::FULL)
-            .finish();
-
-        with_default(subscriber, || {
-            let span1 = tracing::info_span!("span1", x = 42);
-            let _e = span1.enter();
-        });
-        let actual = sanitize_timings(String::from_utf8(BUF.try_lock().unwrap().to_vec()).unwrap());
-        assert_eq!(
+        test_synthesize(FmtSpan::FULL,
             "fake time span1{x=42}: tracing_subscriber::fmt::fmt_layer::test: new\n\
              fake time span1{x=42}: tracing_subscriber::fmt::fmt_layer::test: enter\n\
              fake time span1{x=42}: tracing_subscriber::fmt::fmt_layer::test: exit\n\
              fake time span1{x=42}: tracing_subscriber::fmt::fmt_layer::test: close timing timing\n",
-            actual.as_str()
         );
     }
 }
