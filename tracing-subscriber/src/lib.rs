@@ -95,6 +95,10 @@ macro_rules! try_lock {
     };
 }
 
+#[cfg(feature = "registry")]
+#[cfg_attr(docsrs, doc(cfg(feature = "registry")))]
+pub mod extensions;
+
 pub mod field;
 pub mod filter;
 #[cfg(feature = "fmt")]
