@@ -14,8 +14,9 @@ use std::{
 /// This trait is already implemented for function pointers and
 /// immutably-borrowing closures that return an instance of [`io::Write`], such
 /// as [`io::stdout`] and [`io::stderr`]. Additionally, it is implemented for
-/// [`std::sync::Mutex`][mutex] when the tyoe inside the mutex implements
-/// [`io::Write`].
+/// [`std::sync::Mutex`][mutex] when the type inside the mutex implements
+/// [`io::Write`]. The same implementation is also provided for
+/// [`parking_lot::Mutex`] when the `parking_lot` feature flag is enabled.
 ///
 /// # Examples
 ///
@@ -88,6 +89,7 @@ use std::{
 /// [`io::stdout`]: https://doc.rust-lang.org/std/io/fn.stdout.html
 /// [`io::stderr`]: https://doc.rust-lang.org/std/io/fn.stderr.html
 /// [mutex]: https://doc.rust-lang.org/std/sync/struct.Mutex.html
+/// [`parking_lot::Mutex`]: https://docs.rs/parking_lot/latest/parking_lot/type.Mutex.html
 pub trait MakeWriter<'a> {
     /// The concrete [`io::Write`] implementation returned by [`make_writer`].
     ///
@@ -178,6 +180,79 @@ where
     #[inline]
     fn write_fmt(&mut self, fmt: std::fmt::Arguments<'_>) -> io::Result<()> {
         self.0.write_fmt(fmt)
+    }
+}
+
+#[cfg_attr(docsrs, doc(cfg(feature = "parking_lot")))]
+#[cfg(feature = "parking_lot")]
+pub use self::parking_lot::*;
+
+#[cfg_attr(docsrs, doc(cfg(feature = "parking_lot")))]
+#[cfg(feature = "parking_lot")]
+mod parking_lot {
+    use super::MakeWriter;
+    use parking_lot::{Mutex, MutexGuard};
+    use std::io;
+
+    /// A type implementing [`io::Write`] for a [`parking_lot::MutexGuard`]
+    /// where the type inside the [`parking_lot::Mutex`] implements [`io::Write`].
+    ///
+    /// This is used by the [`MakeWriter`] implementation for
+    /// [`parking_lot::Mutex`], because [`MutexGuard`] itself will not implement
+    /// [`io::Write`] — instead, it _dereferences_ to a type implementing
+    /// [`io::Write`]. Because [`MakeWriter`] requires the `Writer` type to
+    /// implement [`io::Write`], it's necessary to add a newtype that forwards
+    /// the trait implementation.
+    ///
+    /// [`io::Write`]: https://doc.rust-lang.org/std/io/trait.Write.html
+    /// [`parking_lot::MutexGuard`]: https://docs.rs/parking_lot/latest/parking_lot/type.MutexGuard.html
+    /// [`parking_lot::Mutex`]: https://docs.rs/parking_lot/latest/parking_lot/type.Mutex.html
+    /// [`MakeWriter`]: trait.MakeWriter.html   
+    #[derive(Debug)]
+    #[cfg_attr(docsrs, doc(cfg(feature = "parking_lot")))]
+    pub struct ParkingLotMutexGuardWriter<'a, W>(MutexGuard<'a, W>);
+
+    #[cfg_attr(docsrs, doc(cfg(feature = "parking_lot")))]
+    impl<'a, W> MakeWriter<'a> for Mutex<W>
+    where
+        W: io::Write + 'a,
+    {
+        type Writer = ParkingLotMutexGuardWriter<'a, W>;
+
+        fn make_writer(&'a self) -> Self::Writer {
+            ParkingLotMutexGuardWriter(self.lock())
+        }
+    }
+
+    #[cfg_attr(docsrs, doc(cfg(feature = "parking_lot")))]
+    impl<'a, W> io::Write for ParkingLotMutexGuardWriter<'a, W>
+    where
+        W: io::Write,
+    {
+        #[inline]
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.0.write(buf)
+        }
+
+        #[inline]
+        fn flush(&mut self) -> io::Result<()> {
+            self.0.flush()
+        }
+
+        #[inline]
+        fn write_vectored(&mut self, bufs: &[io::IoSlice<'_>]) -> io::Result<usize> {
+            self.0.write_vectored(bufs)
+        }
+
+        #[inline]
+        fn write_all(&mut self, buf: &[u8]) -> io::Result<()> {
+            self.0.write_all(buf)
+        }
+
+        #[inline]
+        fn write_fmt(&mut self, fmt: std::fmt::Arguments<'_>) -> io::Result<()> {
+            self.0.write_fmt(fmt)
+        }
     }
 }
 
